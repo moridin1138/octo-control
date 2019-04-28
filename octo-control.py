@@ -1,13 +1,91 @@
+#!/usr/bin/python3
+
 import requests
-import argparse
 import sys
+import time
+import board
+import neopixel
+import subprocess
 
-__author__ = 'Andres Torti'
+num_pixels = 36
+pixels = neopixel.NeoPixel(board.D18, num_pixels, brightness=0.2)
 
+lastStatus = None
+lastConnectStatus = True
+
+#pixels[0] = (255, 0, 0)
+
+__original_author__ = 'Andres Torti'
+__edited_by__ = 'Brian Jackson'
+
+octohost = '127.0.0.1'
+octoport = '5000'
+octoapikey = '7DF42B1B487843048538B7E0851563F3'
+
+def colorFadeTwo(colorFrom, colorTo, wait_ms=5, steps=50):
+	#ssteps = 200
+	step_R = (colorTo[0] - colorFrom[0]) / steps
+	step_G = (colorTo[1] - colorFrom[1]) / steps
+	step_B = (colorTo[2] - colorFrom[2]) / steps  
+	r = int(colorFrom[0])
+	g = int(colorFrom[1])
+	b = int(colorFrom[2])
+
+	for x in range(steps):
+		#print(int(r), int(g), int(b))
+		fillTwo(int(r), int(g), int(b))
+		time.sleep(wait_ms / 1000.0)
+		r += step_R
+		g += step_G
+		b += step_B
+
+def switchLights(status):
+	if status == 0:
+		subprocess.run(["gpio", "-g", "mode", "17", "in"])
+	elif status == 1:
+		subprocess.run(["gpio", "-g", "mode", "17", "out"])
+
+def fillTwo(r, g, b):
+	pixels.fill((0, 0, 0))
+	halfPixel1 = round(num_pixels/2)
+	halfPixel2 = round((num_pixels/2)-1)
+	pixels[halfPixel1] = (r, g, b)
+	pixels[halfPixel2] = (r, g, b)
+	
+def wheel(pos):
+    # Input a value 0 to 255 to get a color value.
+    # The colours are a transition r - g - b - back to r.
+    if pos < 0 or pos > 255:
+        r = g = b = 0
+    elif pos < 85:
+        r = int(pos * 3)
+        g = int(255 - pos*3)
+        b = 0
+    elif pos < 170:
+        pos -= 85
+        r = int(255 - pos*3)
+        g = 0
+        b = int(pos*3)
+    else:
+        pos -= 170
+        r = 0
+        g = int(pos*3)
+        b = int(255 - pos*3)
+    return (r, g, b)
+
+def rainbow_cycle(wait):
+    for j in range(255):
+        for i in range(num_pixels):
+            pixel_index = (i * 256 // num_pixels) + j
+            pixels[i] = wheel(pixel_index & 255)
+        pixels.show()
+        time.sleep(wait)
 
 class OctoprintAPI:
     """
     This class is an interface for the Octoprint server API
+	
+	Brian: keeping these as is, in case of future expansion.
     """
 
     def __init__(self, address, port, api_key):
@@ -73,7 +151,7 @@ class OctoprintAPI:
                 if 'null' in line:
                     raise Exception('Error trying to get printer status')
                 else:
-                    return line[line.find(':')+1:line.find(',')]
+                    return line[line.find(':')+3:line.find(',')]
 
         # Default response from Octoprint
         return data[0]
@@ -294,7 +372,7 @@ class OctoprintAPI:
         return 0
 
 
-def run_and_handle(method, *_args):
+def run_and_handle(method):
     """
     Just a clean way to call any function and print the returned value to 'stdout' if valid or print the error message to
         to 'stderr'
@@ -303,144 +381,156 @@ def run_and_handle(method, *_args):
     :return: None
     """
     try:
-        result = method(*_args)
+        result = method()
         if result is not None:
-            print(result)
+            return(result)
     except Exception as e:
         print(str(e), file=sys.stderr)
 
-if __name__ == '__main__':
-    # First, check if we have any arguments
-    if len(sys.argv) > 1:
-        parser = argparse.ArgumentParser()
+while True:
+	if __name__ == '__main__':
 
-        # apikey, host, and port are required arguments to communicate with Octoprint
-        parser.add_argument('--apikey', help='Octoprint\'s API Key', type=str, required=True)
-        parser.add_argument('--host', help='Octoprint host address, port must not be specified here', type=str, required=True)
-        parser.add_argument('--port', help='Port on which Octoprint is running', type=int, required=True)
+		# Create the Octoprint interface
+		octo_api = OctoprintAPI(octohost, octoport, octoapikey)
 
-        # Optional arguments
-        parser.add_argument('--printer-connected', help='Checks if there is a printer connected', action='store_true')
-        parser.add_argument('--printer-status', help='Gets the printer status (Operational, Disconnected, ...)',
-                            action='store_true')
+		isPrinterConnected = run_and_handle(octo_api.is_printer_connected)
 
-        parser.add_argument('--connect', help='Connect to the printer. If no other connection parameter is specified '
-                                              'the default values in Octoprint will be used, see --printer-port,'
-                                              ' --baudrate, --profile, --save and --autoconnect', action='store_true')
-        parser.add_argument('--printer-port', help='Port where the printer is connected ie: /dev/tty02, COM2 and so on',
-                            type=str)
-        parser.add_argument('--baudrate', help='Baud-rate for the connection to the printer', type=int)
-        parser.add_argument('--profile', help='Printer profile to be used in the connection, the name here is the name'
-                                              'specified in the profile identifier, not the profile name', type=str)
-        parser.add_argument('--save', help='Save the connection settings when connecting', action='store_true',
-                            default=None)
-        parser.add_argument('--autoconnect', help='Connect automatically on the next Octoprint start',
-                            action='store_true', default=None)
+		# Printer options
+		if isPrinterConnected == True:
+		
+			lastConnectStatus = 'Connected'
+			print ("Printer Connection:  Established")
+			
+			printerStatus = run_and_handle(octo_api.get_printer_status)
+			
+			#first we'll want too check if the status is different from the last go round
+			#we want to skip the LED change if it is, because redrawing sucks!
+			
+			if printerStatus != lastStatus:
+			
+				if printerStatus == 'Operational' and printerStatus != 'Printing':
+					print ("Printer Status:  Operational")
+					colorFadeTwo([0, 0, 255], [0, 255, 0])
+					switchLights(1)
+					lastStatus = 'Operational'	
+						
+				elif printerStatus == 'Disconnected':
+					print ("Printer is not connected")
+					colorFadeTwo([0, 255, 0], [0, 0, 255])
+					switchLights(0)
+					lastConnectStatus = False
+					lastStatus = 'Disconnected'
+				else:
+					print ("Could not determine printer status")
+				
+			#unless it's Printing, because we want to do progress bar updates
+			if printerStatus == 'Printing':
+				print ("Printer Status:  Printing")
+				
+				printerProgress = run_and_handle(octo_api.get_print_progress)
+				
+				if printerProgress is not None:
+					printerProgress = printerProgress/100
+					
+					print ("Printer Status:")
+					print (printerProgress)
+					
+					numLights = round(num_pixels * printerProgress)
+					print ("Number of LEDS")
+					print (numLights)
 
-        parser.add_argument('--print-progress', help='Gets the print progress as percentage', action='store_true')
-        parser.add_argument('--total-time', help='Gets the total print time in seconds', action='store_true')
-        parser.add_argument('--left-time', help='Gets the time left for the print to finish', action='store_true')
-        parser.add_argument('--elapsed-time', help='Gets the elapsed print time', action='store_true')
+					for y in range((num_pixels-1)-numLights, 0, -1):
+						pixels[y] = (255, 0, 0)				
+					for x in range(num_pixels-1, num_pixels-numLights, -1):
+						pixels[x] = (0, 255, 0)
+						
+				elif printerProgress is None:
+					print ("Could not get progress of printer")
+				
+				lastStatus = 'Printing'	
+			
+			lastConnectStatus = True
+			
+			#print ("Printer status output: ")
+			#print (printerStatus)
+		
+		#not connected, so let's make it blue and turn off the lights
+		else:
+			if lastConnectStatus == True and isPrinterConnected == False:
+				print ("Printer is not connected")
+				colorFadeTwo([0, 255, 0], [0, 0, 255])
+				switchLights(0)
+				lastConnectStatus = False
+				lastStatus = 'Disconnected'
+		
+		'''
+		Also keeping these for future expansion
+		'''
+		#print (run_and_handle(octo_api.is_printer_connected))
 
-        parser.add_argument('--printing-file', help='Gets the name of the file being printed', action='store_true')
-        parser.add_argument('--send-gcode', help='Sends specified G-code/s to the printer. Multiple G-Codes can be '
-                                                 'specified', nargs='*', type=str, metavar=('GCODE'))
+		# elif args.connect:
+			# run_and_handle(octo_api.connect_to_printer, args.printer_port, args.baudrate, args.profile, args.save,
+						   # args.autoconnect)
 
-        parser.add_argument('--select-file', help='Selects an already uploaded file. FILE_LOCATION can be'
-                                                  ' \'local\' or \'sdcard\'', type=str, nargs=1,
-                            metavar=('FILE_NAME'))
-        parser.add_argument('--print', help='When used with --select-file will also start printing the selected file',
-                            action='store_true')
+		# elif args.printer_status:
+			# run_and_handle(octo_api.get_printer_status)
 
+		# elif args.print_progress:
+			# run_and_handle(octo_api.get_print_progress)
 
-        parser.add_argument('--set-bed-temp', help='Sets the bed temperature in degrees celsius', type=int,
-                            metavar=('BED_TEMP'))
-        parser.add_argument('--get-bed-temp', help='Gets the current bed temperature', action='store_true')
+		# elif args.total_time:
+			# run_and_handle(octo_api.get_total_print_time)
 
-        parser.add_argument('--ext-temp', help='Gets the current extruder temperature in degrees celsius',
-                            action='store_true')
-        parser.add_argument('--ext-target', help='Gets the target extruder temperature in degrees celsius',
-                            action='store_true')
+		# elif args.left_time:
+			# run_and_handle(octo_api.get_print_time_left)
 
-        parser.add_argument('--pause', help='Pause the current job', action='store_true')
-        parser.add_argument('--resume', help='Resume the current job', action='store_true')
-        parser.add_argument('--start', help='Starts printing with the currently selected file', action='store_true')
-        parser.add_argument('--cancel', help='Cancel the current job', action='store_true')
+		# elif args.elapsed_time:
+			# run_and_handle(octo_api.get_elapsed_print_time)
 
-        parser.add_argument('--octo-version', help='Reads Octoprint version', action='store_true')
-        parser.add_argument('--version', help='Get script version', action='store_true')
+		# elif args.printing_file:
+			# run_and_handle(octo_api.get_file_printing)
 
-        # Parse the arguments!
-        args = parser.parse_args()
+		# elif args.send_gcode:
+			# run_and_handle(octo_api.send_gcode, args.send_gcode)
 
-        # Create the Octoprint interface
-        octo_api = OctoprintAPI(args.host, args.port, args.apikey)
+		# elif args.select_file:
+			# run_and_handle(octo_api.select_file, args.select_file[0])
 
-        # Printer options
-        if args.printer_connected:
-            run_and_handle(octo_api.is_printer_connected)
+		# # Extruder
+		# elif args.ext_temp:
+			# run_and_handle(octo_api.get_extruder_current_temp)
 
-        elif args.connect:
-            run_and_handle(octo_api.connect_to_printer, args.printer_port, args.baudrate, args.profile, args.save,
-                           args.autoconnect)
+		# elif args.ext_target:
+			# run_and_handle(octo_api.get_extruder_target_temp)
 
-        elif args.printer_status:
-            run_and_handle(octo_api.get_printer_status)
+		# # Bed options
+		# elif args.set_bed_temp:
+			# if args.set_bed_temp < 0:
+				# print('Error, bed temperature can\'t be negative', file=sys.stderr)
+			# else:
+				# run_and_handle(octo_api.set_bed_temp, args.set_bed_temp)
 
-        elif args.print_progress:
-            run_and_handle(octo_api.get_print_progress)
+		# elif args.get_bed_temp:
+			# run_and_handle(octo_api.get_bed_temp)
 
-        elif args.total_time:
-            run_and_handle(octo_api.get_total_print_time)
+		# # Job options
+		# elif args.pause:
+			# run_and_handle(octo_api.pause_job)
 
-        elif args.left_time:
-            run_and_handle(octo_api.get_print_time_left)
+		# elif args.resume:
+			# run_and_handle(octo_api.resume_job)
 
-        elif args.elapsed_time:
-            run_and_handle(octo_api.get_elapsed_print_time)
+		# elif args.start:
+			# run_and_handle(octo_api.start_job)
 
-        elif args.printing_file:
-            run_and_handle(octo_api.get_file_printing)
+		# elif args.cancel:
+			# run_and_handle(octo_api.cancel_job)
 
-        elif args.send_gcode:
-            run_and_handle(octo_api.send_gcode, args.send_gcode)
+		# # Other options
+		# elif args.octo_version:
+			# run_and_handle(octo_api.get_version)
 
-        elif args.select_file:
-            run_and_handle(octo_api.select_file, args.select_file[0])
+		# elif args.version:
+			# print('1.0.0')
 
-        # Extruder
-        elif args.ext_temp:
-            run_and_handle(octo_api.get_extruder_current_temp)
-
-        elif args.ext_target:
-            run_and_handle(octo_api.get_extruder_target_temp)
-
-        # Bed options
-        elif args.set_bed_temp:
-            if args.set_bed_temp < 0:
-                print('Error, bed temperature can\'t be negative', file=sys.stderr)
-            else:
-                run_and_handle(octo_api.set_bed_temp, args.set_bed_temp)
-
-        elif args.get_bed_temp:
-            run_and_handle(octo_api.get_bed_temp)
-
-        # Job options
-        elif args.pause:
-            run_and_handle(octo_api.pause_job)
-
-        elif args.resume:
-            run_and_handle(octo_api.resume_job)
-
-        elif args.start:
-            run_and_handle(octo_api.start_job)
-
-        elif args.cancel:
-            run_and_handle(octo_api.cancel_job)
-
-        # Other options
-        elif args.octo_version:
-            run_and_handle(octo_api.get_version)
-
-        elif args.version:
-            print('1.0.0')
+	time.sleep(5)
