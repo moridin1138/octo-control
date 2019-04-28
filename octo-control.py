@@ -20,7 +20,7 @@ __edited_by__ = 'Brian Jackson'
 
 octohost = '127.0.0.1'
 octoport = '5000'
-octoapikey = '7DF42B1B487843048538B7E0851563F3'
+octoapikey = 'OCTOPRINT_API_KEY'
 
 def colorFadeTwo(colorFrom, colorTo, wait_ms=5, steps=50):
 	#ssteps = 200
